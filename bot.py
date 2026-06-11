@@ -21,6 +21,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 announced_matches = set()
 active_polls = {}
 daily_announced_dates = set()
+announced_kickoffs = set()
 
 TIMEZONES = [
     ("🇦🇷", "ARG", -3),
@@ -58,7 +59,7 @@ TEAM_FLAGS = {
 
 MUNDIAL_BANNER = "https://upload.wikimedia.org/wikipedia/en/thumb/5/5c/2026_FIFA_World_Cup_emblem.svg/800px-2026_FIFA_World_Cup_emblem.svg.png"
 
-
+STAGE_COLORS = {
     "GROUP_STAGE": 0x5865F2, "LAST_16": 0x9B59B6,
     "QUARTER_FINALS": 0xE67E22, "SEMI_FINALS": 0xE74C3C,
     "THIRD_PLACE": 0xCD853F, "FINAL": 0xFFD700,
@@ -290,6 +291,37 @@ async def daily_schedule_sender():
         if channel:
             await send_daily_matches(channel)
 
+@tasks.loop(minutes=2)
+async def check_kickoffs():
+    channel = bot.get_channel(CHANNEL_ID)
+    if not channel:
+        return
+    live = await fd_request({"status": "IN_PLAY,PAUSED,HALFTIME"})
+    for m in live:
+        mid = m["id"]
+        if mid in announced_kickoffs:
+            continue
+        announced_kickoffs.add(mid)
+        home, away = m["homeTeam"]["name"], m["awayTeam"]["name"]
+        hf, af = get_flag(home), get_flag(away)
+        color = get_color(m)
+        stage_name = get_stage_name(m)
+        emoji = get_emoji(m)
+
+        embed = discord.Embed(color=color)
+        embed.set_author(name=f"🟢  PARTIDO EN CURSO  •  {emoji} {stage_name}", icon_url=MUNDIAL_BANNER)
+        embed.title = f"{hf} {home}  ⚽  {away} {af}"
+        embed.description = (
+            f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"**¡El partido acaba de comenzar!**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━"
+        )
+        embed.set_thumbnail(url=MUNDIAL_BANNER)
+        embed.set_footer(text="Mundial 2026  •  En vivo ahora")
+        embed.timestamp = datetime.now(timezone.utc)
+        await channel.send(embed=embed)
+        print(f"[BOT] Kickoff: {home} vs {away}")
+
 @tasks.loop(minutes=3)
 async def check_results():
     channel = bot.get_channel(CHANNEL_ID)
@@ -369,6 +401,7 @@ async def votar(ctx, *, partido: str):
 @bot.event
 async def on_ready():
     print(f"[BOT] Conectado como {bot.user} ({bot.user.id})")
+    check_kickoffs.start()
     check_results.start()
     check_upcoming_polls.start()
     daily_schedule_sender.start()
