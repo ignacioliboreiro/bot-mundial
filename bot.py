@@ -150,10 +150,20 @@ async def fetch_all_matches(status="SCHEDULED,TIMED"):
             return data.get("matches", [])
 
 async def fetch_today_matches():
-    """Trae todos los partidos y filtra los de hoy por fecha UTC."""
-    matches = await fetch_all_matches("SCHEDULED,TIMED,IN_PLAY,PAUSED,FINISHED")
-    return [m for m in matches if is_today(m.get("utcDate", ""))
-            and m.get("status") in ("SCHEDULED", "TIMED", "IN_PLAY", "PAUSED")]
+    """Trae partidos de hoy usando dateFrom/dateTo — más confiable que filtrar por status."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    url = f"https://api.football-data.org/v4/competitions/{COMPETITION_ID}/matches"
+    headers = {"X-Auth-Token": FOOTBALL_API_KEY}
+    params = {"dateFrom": today, "dateTo": today}
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, headers=headers, params=params) as resp:
+            if resp.status != 200:
+                print(f"[API ERROR] fetch_today_matches: {resp.status}")
+                return []
+            data = await resp.json()
+            matches = data.get("matches", [])
+            print(f"[BOT] Partidos de hoy encontrados: {len(matches)} → {[m['homeTeam']['name']+' vs '+m['awayTeam']['name'] for m in matches]}")
+            return [m for m in matches if m.get("status") in ("SCHEDULED", "TIMED", "IN_PLAY", "PAUSED")]
 
 async def fetch_finished_matches():
     return await fetch_all_matches("FINISHED")
