@@ -178,6 +178,8 @@ def build_today_header(matches, today_dt):
 def build_match_embed(m, index=None, total=None):
     home, away = m["homeTeam"]["name"], m["awayTeam"]["name"]
     hf, af = get_flag(home), get_flag(away)
+    home_crest = m["homeTeam"].get("crest") or m["homeTeam"].get("tla", "")
+    away_crest = m["awayTeam"].get("crest") or m["awayTeam"].get("tla", "")
     utc = m.get("utcDate", "")
     col1, col2 = format_times(utc)
     dt = get_utc_dt(m)
@@ -191,24 +193,31 @@ def build_match_embed(m, index=None, total=None):
     embed.add_field(name="🕐  Horario central", value=f"**`{utc_time}`**", inline=False)
     embed.add_field(name="🌎  Latinoamérica", value=col1, inline=True)
     embed.add_field(name="\u200b", value=col2, inline=True)
-    embed.set_footer(text=f"Mundial 2026  •  {hf} {home} vs {af} {away}")
+    if home_crest and home_crest.startswith("http"):
+        embed.set_thumbnail(url=home_crest)
+    embed.set_footer(text=f"Mundial 2026  •  {hf} {home} vs {af} {away}", icon_url=away_crest if away_crest and away_crest.startswith("http") else discord.embeds.EmptyEmbed)
     return embed
 
 def build_result_embed(m):
     home, away = m["homeTeam"]["name"], m["awayTeam"]["name"]
     hf, af = get_flag(home), get_flag(away)
+    home_crest = m["homeTeam"].get("crest") or ""
+    away_crest = m["awayTeam"].get("crest") or ""
     sh = m["score"]["fullTime"]["home"]
     sa = m["score"]["fullTime"]["away"]
 
     if sh > sa:
         resultado = f"🏆  **{hf} {home}** se llevó la victoria"
         color = 0x2ECC71
+        winner_crest = home_crest
     elif sa > sh:
         resultado = f"🏆  **{af} {away}** se llevó la victoria"
         color = 0x2ECC71
+        winner_crest = away_crest
     else:
         resultado = "🤝  El partido terminó en **empate**"
         color = 0xF1C40F
+        winner_crest = home_crest
 
     embed = discord.Embed(color=color)
     embed.set_author(name=f"🔔  RESULTADO FINAL  •  {get_emoji(m)} {get_stage_name(m)}")
@@ -220,6 +229,8 @@ def build_result_embed(m):
         embed.add_field(name="⏱️  Primer tiempo", value=f"`{ht['home']} — {ht['away']}`", inline=True)
         embed.add_field(name="⏱️  Final", value=f"`{sh} — {sa}`", inline=True)
 
+    if winner_crest and winner_crest.startswith("http"):
+        embed.set_thumbnail(url=winner_crest)
     embed.set_footer(text="Mundial 2026  •  Resultado oficial")
     embed.timestamp = datetime.now(timezone.utc)
     return embed
@@ -227,6 +238,7 @@ def build_result_embed(m):
 def build_poll_embed(m, index=None, total=None):
     home, away = m["homeTeam"]["name"], m["awayTeam"]["name"]
     hf, af = get_flag(home), get_flag(away)
+    home_crest = m["homeTeam"].get("crest") or ""
     utc = m.get("utcDate", "")
     col1, col2 = format_times(utc)
     dt = get_utc_dt(m)
@@ -247,6 +259,8 @@ def build_poll_embed(m, index=None, total=None):
     embed.add_field(name="🕐  Horario", value=f"**`{utc_time}`**", inline=False)
     embed.add_field(name="🌎  Latinoamérica", value=col1, inline=True)
     embed.add_field(name="\u200b", value=col2, inline=True)
+    if home_crest and home_crest.startswith("http"):
+        embed.set_thumbnail(url=home_crest)
     embed.set_footer(text="Mundial 2026  •  Poll abierta 1h antes del partido")
     return embed
 
