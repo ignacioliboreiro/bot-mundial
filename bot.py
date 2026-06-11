@@ -10,11 +10,9 @@ load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0"))
-APISPORTS_KEY = os.getenv("APISPORTS_KEY")
+FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY")
+COMPETITION_ID = os.getenv("COMPETITION_ID", "WC")
 DAILY_HOUR_UTC = int(os.getenv("DAILY_HOUR_UTC", "12"))
-
-# ID del Mundial 2026 en api-football
-WORLD_CUP_ID = 1
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -54,248 +52,185 @@ TEAM_FLAGS = {
     "Cameroon": "🇨🇲", "Egypt": "🇪🇬", "Tunisia": "🇹🇳", "South Africa": "🇿🇦",
     "Japan": "🇯🇵", "South Korea": "🇰🇷", "Australia": "🇦🇺", "Iran": "🇮🇷",
     "Saudi Arabia": "🇸🇦", "Qatar": "🇶🇦", "Indonesia": "🇮🇩",
-    "Bosnia": "🇧🇦", "Slovenia": "🇸🇮", "Albania": "🇦🇱",
-    "New Zealand": "🇳🇿", "England": "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
+    "Bosnia-Herzegovina": "🇧🇦", "Slovenia": "🇸🇮", "Albania": "🇦🇱",
+    "New Zealand": "🇳🇿",
 }
 
-ROUND_COLORS = {
-    "Group Stage": 0x5865F2,
-    "Round of 16": 0x9B59B6,
-    "Quarter-finals": 0xE67E22,
-    "Semi-finals": 0xE74C3C,
-    "3rd Place Final": 0xCD853F,
-    "Final": 0xFFD700,
+STAGE_COLORS = {
+    "GROUP_STAGE": 0x5865F2, "LAST_16": 0x9B59B6,
+    "QUARTER_FINALS": 0xE67E22, "SEMI_FINALS": 0xE74C3C,
+    "THIRD_PLACE": 0xCD853F, "FINAL": 0xFFD700,
+}
+STAGE_EMOJI = {
+    "GROUP_STAGE": "🏟️", "LAST_16": "⚔️", "QUARTER_FINALS": "🔥",
+    "SEMI_FINALS": "💥", "THIRD_PLACE": "🥉", "FINAL": "🏆",
+}
+STAGE_NAMES = {
+    "GROUP_STAGE": "Fase de Grupos", "LAST_16": "Octavos de Final",
+    "QUARTER_FINALS": "Cuartos de Final", "SEMI_FINALS": "Semifinales",
+    "THIRD_PLACE": "Tercer Puesto", "FINAL": "GRAN FINAL",
 }
 
-ROUND_EMOJI = {
-    "Group Stage": "🏟️",
-    "Round of 16": "⚔️",
-    "Quarter-finals": "🔥",
-    "Semi-finals": "💥",
-    "3rd Place Final": "🥉",
-    "Final": "🏆",
-}
+def get_flag(name): return TEAM_FLAGS.get(name, "🏳️")
+def get_stage(m): return m.get("stage", "GROUP_STAGE")
+def get_color(m): return STAGE_COLORS.get(get_stage(m), 0x5865F2)
+def get_emoji(m): return STAGE_EMOJI.get(get_stage(m), "⚽")
 
-def get_flag(name):
-    return TEAM_FLAGS.get(name, "🏳️")
-
-def get_round_color(round_name):
-    for key, color in ROUND_COLORS.items():
-        if key.lower() in (round_name or "").lower():
-            return color
-    return 0x5865F2
-
-def get_round_emoji(round_name):
-    for key, emoji in ROUND_EMOJI.items():
-        if key.lower() in (round_name or "").lower():
-            return emoji
-    return "⚽"
+def get_stage_name(m):
+    stage = get_stage(m)
+    group = m.get("group") or ""
+    name = STAGE_NAMES.get(stage, stage.replace("_", " ").title())
+    if group and "GROUP" in stage:
+        letter = group.replace("Group ", "").replace("GROUP_", "")
+        name = f"Grupo {letter}"
+    return name
 
 def format_date_es(dt):
     return f"{DIAS_ES[dt.weekday()]} {dt.day} de {MESES_ES[dt.month]} {dt.year}"
 
-def format_times(timestamp):
+def format_times(utc_str):
     try:
-        dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        dt = datetime.fromisoformat(utc_str.replace("Z", "+00:00"))
         col1, col2 = [], []
         for i, (flag, code, offset) in enumerate(TIMEZONES):
             local = dt + timedelta(hours=offset)
             entry = f"{flag} **{code}** `{local.strftime('%H:%M')}`"
-            if i % 2 == 0:
-                col1.append(entry)
-            else:
-                col2.append(entry)
+            (col1 if i % 2 == 0 else col2).append(entry)
         return "\n".join(col1), "\n".join(col2)
     except Exception:
         return "?", ""
 
-def parse_dt(timestamp):
+def get_utc_dt(m):
     try:
-        return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        return datetime.fromisoformat(m.get("utcDate", "").replace("Z", "+00:00"))
     except Exception:
         return None
 
+def is_today(m):
+    dt = get_utc_dt(m)
+    return dt and dt.date() == datetime.now(timezone.utc).date()
+
 # ─────────────────────────────
-#  API-FOOTBALL
+#  API — DOS LLAMADAS SEPARADAS
 # ─────────────────────────────
 
-async def api_request(endpoint, params):
-    url = f"https://v3.football.api-sports.io/{endpoint}"
-    headers = {"x-apisports-key": APISPORTS_KEY}
+async def fd_request(params):
+    url = f"https://api.football-data.org/v4/competitions/{COMPETITION_ID}/matches"
+    headers = {"X-Auth-Token": FOOTBALL_API_KEY}
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers, params=params) as resp:
             if resp.status != 200:
-                print(f"[API ERROR] {endpoint} → {resp.status}")
+                print(f"[API ERROR] {resp.status} params={params}")
                 return []
             data = await resp.json()
-            errors = data.get("errors", {})
-            if errors:
-                print(f"[API ERRORS] {errors}")
-                return []
-            return data.get("response", [])
-
-async def get_season():
-    """Detecta el año de la temporada activa del Mundial."""
-    return 2026
+            return data.get("matches", [])
 
 async def fetch_today_matches():
-    season = await get_season()
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    results = await api_request("fixtures", {
-        "league": WORLD_CUP_ID,
-        "season": season,
-        "date": today,
-        "timezone": "UTC"
-    })
-    print(f"[BOT] Partidos de hoy: {len(results)} → {[r['teams']['home']['name']+' vs '+r['teams']['away']['name'] for r in results]}")
-    return [r for r in results if r["fixture"]["status"]["short"] in ("NS", "TBD", "1H", "HT", "2H", "ET", "P")]
+    """Dos llamadas separadas para SCHEDULED y TIMED, luego filtra por fecha."""
+    scheduled = await fd_request({"status": "SCHEDULED"})
+    await asyncio.sleep(1)  # evitar rate limit
+    timed = await fd_request({"status": "TIMED"})
 
-async def fetch_finished_today():
-    season = await get_season()
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    results = await api_request("fixtures", {
-        "league": WORLD_CUP_ID,
-        "season": season,
-        "date": today,
-        "timezone": "UTC",
-        "status": "FT-AET-PEN"
-    })
-    return results
+    all_matches = {m["id"]: m for m in scheduled + timed}
+    today = [m for m in all_matches.values() if is_today(m)]
+    today.sort(key=lambda m: m.get("utcDate", ""))
 
-async def fetch_live():
-    results = await api_request("fixtures", {
-        "league": WORLD_CUP_ID,
-        "live": "all"
-    })
-    return results
-
-async def fetch_upcoming():
-    season = await get_season()
-    results = await api_request("fixtures", {
-        "league": WORLD_CUP_ID,
-        "season": season,
-        "status": "NS",
-        "timezone": "UTC"
-    })
-    return results[:10]
+    print(f"[BOT] Hoy: {len(today)} partidos → {[m['homeTeam']['name']+' vs '+m['awayTeam']['name'] for m in today]}")
+    return today
 
 async def fetch_finished():
-    season = await get_season()
-    results = await api_request("fixtures", {
-        "league": WORLD_CUP_ID,
-        "season": season,
-        "status": "FT",
-        "timezone": "UTC"
-    })
-    return results
+    return await fd_request({"status": "FINISHED"})
+
+async def fetch_upcoming():
+    scheduled = await fd_request({"status": "SCHEDULED"})
+    timed = await fd_request({"status": "TIMED"})
+    all_m = {m["id"]: m for m in scheduled + timed}
+    result = sorted(all_m.values(), key=lambda m: m.get("utcDate", ""))
+    return result[:10]
 
 # ─────────────────────────────
 #  EMBEDS
 # ─────────────────────────────
 
-def build_today_header(fixtures, today_dt):
-    rounds = set(f["league"]["round"] for f in fixtures)
-    color = 0x5865F2
-    for r in rounds:
-        if "Final" in r:
-            color = 0xFFD700
-        elif "Semi" in r:
-            color = 0xE74C3C
-
+def build_today_header(matches, today_dt):
+    color = max((STAGE_COLORS.get(get_stage(m), 0x5865F2) for m in matches), default=0x5865F2)
     embed = discord.Embed(color=color)
     embed.set_author(name="🌍  MUNDIAL 2026  •  Partidos del Día")
     embed.title = f"📅  {format_date_es(today_dt)}"
     embed.description = (
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"**{len(fixtures)}** partido{'s' if len(fixtures) != 1 else ''} programado{'s' if len(fixtures) != 1 else ''} para hoy\n"
+        f"**{len(matches)}** partido{'s' if len(matches) != 1 else ''} programado{'s' if len(matches) != 1 else ''} para hoy\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━"
     )
     embed.set_footer(text="Horarios en tiempo local de cada país")
     return embed
 
-def build_match_embed(fixture, index=None, total=None):
-    home = fixture["teams"]["home"]["name"]
-    away = fixture["teams"]["away"]["name"]
-    home_flag = get_flag(home)
-    away_flag = get_flag(away)
-    ts = fixture["fixture"]["timestamp"]
-    round_name = fixture["league"]["round"]
-    col1, col2 = format_times(ts)
-    color = get_round_color(round_name)
-    emoji = get_round_emoji(round_name)
-
-    dt = parse_dt(ts)
+def build_match_embed(m, index=None, total=None):
+    home, away = m["homeTeam"]["name"], m["awayTeam"]["name"]
+    hf, af = get_flag(home), get_flag(away)
+    utc = m.get("utcDate", "")
+    col1, col2 = format_times(utc)
+    dt = get_utc_dt(m)
     utc_time = dt.strftime("%H:%M UTC") if dt else "?"
-    fecha_str = format_date_es(dt) if dt else ""
+    fecha = format_date_es(dt) if dt else ""
     counter = f"Partido {index}/{total}  •  " if index and total else ""
 
-    embed = discord.Embed(color=color)
-    embed.set_author(name=f"{counter}{emoji}  {round_name}  •  {fecha_str}")
-    embed.title = f"{home_flag} {home}  🆚  {away} {away_flag}"
+    embed = discord.Embed(color=get_color(m))
+    embed.set_author(name=f"{counter}{get_emoji(m)}  {get_stage_name(m)}  •  {fecha}")
+    embed.title = f"{hf} {home}  🆚  {away} {af}"
     embed.add_field(name="🕐  Horario central", value=f"**`{utc_time}`**", inline=False)
     embed.add_field(name="🌎  Latinoamérica", value=col1, inline=True)
     embed.add_field(name="\u200b", value=col2, inline=True)
-    embed.set_footer(text=f"Mundial 2026  •  {home_flag} {home} vs {away_flag} {away}")
+    embed.set_footer(text=f"Mundial 2026  •  {hf} {home} vs {af} {away}")
     return embed
 
-def build_result_embed(fixture):
-    home = fixture["teams"]["home"]["name"]
-    away = fixture["teams"]["away"]["name"]
-    home_flag = get_flag(home)
-    away_flag = get_flag(away)
-    sh = fixture["goals"]["home"] or 0
-    sa = fixture["goals"]["away"] or 0
-    round_name = fixture["league"]["round"]
-    emoji = get_round_emoji(round_name)
+def build_result_embed(m):
+    home, away = m["homeTeam"]["name"], m["awayTeam"]["name"]
+    hf, af = get_flag(home), get_flag(away)
+    sh = m["score"]["fullTime"]["home"]
+    sa = m["score"]["fullTime"]["away"]
 
     if sh > sa:
-        resultado = f"🏆  **{home_flag} {home}** se llevó la victoria"
+        resultado = f"🏆  **{hf} {home}** se llevó la victoria"
         color = 0x2ECC71
     elif sa > sh:
-        resultado = f"🏆  **{away_flag} {away}** se llevó la victoria"
+        resultado = f"🏆  **{af} {away}** se llevó la victoria"
         color = 0x2ECC71
     else:
         resultado = "🤝  El partido terminó en **empate**"
         color = 0xF1C40F
 
     embed = discord.Embed(color=color)
-    embed.set_author(name=f"🔔  RESULTADO FINAL  •  {emoji} {round_name}")
-    embed.title = f"{home_flag} {home}  {sh} — {sa}  {away} {away_flag}"
-    embed.description = (
-        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"{resultado}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━"
-    )
-    ht = fixture.get("score", {}).get("halftime", {})
+    embed.set_author(name=f"🔔  RESULTADO FINAL  •  {get_emoji(m)} {get_stage_name(m)}")
+    embed.title = f"{hf} {home}  {sh} — {sa}  {away} {af}"
+    embed.description = f"━━━━━━━━━━━━━━━━━━━━━━━━\n{resultado}\n━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    ht = m.get("score", {}).get("halfTime", {})
     if ht.get("home") is not None:
         embed.add_field(name="⏱️  Primer tiempo", value=f"`{ht['home']} — {ht['away']}`", inline=True)
         embed.add_field(name="⏱️  Final", value=f"`{sh} — {sa}`", inline=True)
+
     embed.set_footer(text="Mundial 2026  •  Resultado oficial")
     embed.timestamp = datetime.now(timezone.utc)
     return embed
 
-def build_poll_embed(fixture, index=None, total=None):
-    home = fixture["teams"]["home"]["name"]
-    away = fixture["teams"]["away"]["name"]
-    home_flag = get_flag(home)
-    away_flag = get_flag(away)
-    ts = fixture["fixture"]["timestamp"]
-    round_name = fixture["league"]["round"]
-    col1, col2 = format_times(ts)
-    color = get_round_color(round_name)
-    emoji = get_round_emoji(round_name)
-    dt = parse_dt(ts)
+def build_poll_embed(m, index=None, total=None):
+    home, away = m["homeTeam"]["name"], m["awayTeam"]["name"]
+    hf, af = get_flag(home), get_flag(away)
+    utc = m.get("utcDate", "")
+    col1, col2 = format_times(utc)
+    dt = get_utc_dt(m)
     utc_time = dt.strftime("%H:%M UTC") if dt else "?"
     counter = f"Partido {index}/{total}  •  " if index and total else ""
 
-    embed = discord.Embed(color=color)
-    embed.set_author(name=f"{counter}{emoji}  {round_name}  •  ¿Quién ganará?")
-    embed.title = f"🗳️  {home_flag} {home}  🆚  {away_flag} {away}"
+    embed = discord.Embed(color=get_color(m))
+    embed.set_author(name=f"{counter}{get_emoji(m)}  {get_stage_name(m)}  •  ¿Quién ganará?")
+    embed.title = f"🗳️  {hf} {home}  🆚  {af} {away}"
     embed.description = (
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"{home_flag}  →  **{home}**\n"
+        f"{hf}  →  **{home}**\n"
         f"🤝  →  **Empate**\n"
-        f"{away_flag}  →  **{away}**\n"
+        f"{af}  →  **{away}**\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"📊  **¡Votá con las reacciones de abajo!**"
     )
@@ -306,85 +241,69 @@ def build_poll_embed(fixture, index=None, total=None):
     return embed
 
 # ─────────────────────────────
-#  ENVIO DIARIO
+#  TAREAS
 # ─────────────────────────────
 
 async def send_daily_matches(channel):
     today_dt = datetime.now(timezone.utc)
-    fixtures = await fetch_today_matches()
+    matches = await fetch_today_matches()
 
-    if not fixtures:
-        embed = discord.Embed(
-            color=0x5865F2,
-            title="📅  Sin partidos hoy",
-            description=f"No hay partidos del Mundial programados para hoy.\n**{format_date_es(today_dt)}**"
-        )
+    if not matches:
+        embed = discord.Embed(color=0x5865F2, title="📅  Sin partidos hoy",
+            description=f"No hay partidos del Mundial para hoy.\n**{format_date_es(today_dt)}**")
         embed.set_footer(text="Mundial 2026")
         await channel.send(embed=embed)
         return
 
-    await channel.send(embed=build_today_header(fixtures, today_dt))
+    await channel.send(embed=build_today_header(matches, today_dt))
     await asyncio.sleep(0.5)
-
-    for i, f in enumerate(fixtures, 1):
-        home_flag = get_flag(f["teams"]["home"]["name"])
-        away_flag = get_flag(f["teams"]["away"]["name"])
-        embed = build_match_embed(f, index=i, total=len(fixtures))
-        msg = await channel.send(embed=embed)
-        await msg.add_reaction(home_flag)
+    for i, m in enumerate(matches, 1):
+        hf, af = get_flag(m["homeTeam"]["name"]), get_flag(m["awayTeam"]["name"])
+        msg = await channel.send(embed=build_match_embed(m, i, len(matches)))
+        await msg.add_reaction(hf)
         await msg.add_reaction("🤝")
-        await msg.add_reaction(away_flag)
+        await msg.add_reaction(af)
         await asyncio.sleep(0.8)
 
 @tasks.loop(minutes=1)
 async def daily_schedule_sender():
     now = datetime.now(timezone.utc)
     today = now.strftime("%Y-%m-%d")
-    if now.hour == DAILY_HOUR_UTC and now.minute == 0:
-        if today not in daily_announced_dates:
-            daily_announced_dates.add(today)
-            channel = bot.get_channel(CHANNEL_ID)
-            if channel:
-                await send_daily_matches(channel)
+    if now.hour == DAILY_HOUR_UTC and now.minute == 0 and today not in daily_announced_dates:
+        daily_announced_dates.add(today)
+        channel = bot.get_channel(CHANNEL_ID)
+        if channel:
+            await send_daily_matches(channel)
 
 @tasks.loop(minutes=3)
 async def check_results():
     channel = bot.get_channel(CHANNEL_ID)
     if not channel:
         return
-    fixtures = await fetch_finished_today()
-    for f in fixtures:
-        fid = f["fixture"]["id"]
-        if fid in announced_matches:
-            continue
-        announced_matches.add(fid)
-        await channel.send(embed=build_result_embed(f))
-        print(f"[BOT] Resultado: {f['teams']['home']['name']} vs {f['teams']['away']['name']}")
+    for m in await fetch_finished():
+        mid = m["id"]
+        if mid not in announced_matches:
+            announced_matches.add(mid)
+            await channel.send(embed=build_result_embed(m))
 
 @tasks.loop(minutes=5)
 async def check_upcoming_polls():
     channel = bot.get_channel(CHANNEL_ID)
     if not channel:
         return
-    fixtures = await fetch_upcoming()
     now = datetime.now(timezone.utc)
-    for f in fixtures:
-        fid = f["fixture"]["id"]
-        if fid in active_polls:
+    for m in await fetch_upcoming():
+        mid = m["id"]
+        if mid in active_polls:
             continue
-        ts = f["fixture"]["timestamp"]
-        dt = parse_dt(ts)
-        if not dt:
-            continue
-        diff_minutes = (dt - now).total_seconds() / 60
-        if 0 < diff_minutes <= 60:
-            home_flag = get_flag(f["teams"]["home"]["name"])
-            away_flag = get_flag(f["teams"]["away"]["name"])
-            msg = await channel.send(embed=build_poll_embed(f))
-            await msg.add_reaction(home_flag)
+        dt = get_utc_dt(m)
+        if dt and 0 < (dt - now).total_seconds() / 60 <= 60:
+            hf, af = get_flag(m["homeTeam"]["name"]), get_flag(m["awayTeam"]["name"])
+            msg = await channel.send(embed=build_poll_embed(m))
+            await msg.add_reaction(hf)
             await msg.add_reaction("🤝")
-            await msg.add_reaction(away_flag)
-            active_polls[fid] = msg.id
+            await msg.add_reaction(af)
+            active_polls[mid] = msg.id
 
 # ─────────────────────────────
 #  COMANDOS
@@ -396,24 +315,23 @@ async def hoy(ctx):
 
 @bot.command(name="proximos")
 async def proximos(ctx):
-    fixtures = await fetch_upcoming()
-    if not fixtures:
+    matches = await fetch_upcoming()
+    if not matches:
         await ctx.send("No hay partidos programados próximamente.")
         return
-    today_dt = datetime.now(timezone.utc)
-    await ctx.send(embed=build_today_header(fixtures[:5], today_dt))
-    for i, f in enumerate(fixtures[:5], 1):
-        await ctx.send(embed=build_match_embed(f, index=i, total=min(5, len(fixtures))))
+    await ctx.send(embed=build_today_header(matches[:5], datetime.now(timezone.utc)))
+    for i, m in enumerate(matches[:5], 1):
+        await ctx.send(embed=build_match_embed(m, i, min(5, len(matches))))
         await asyncio.sleep(0.5)
 
 @bot.command(name="resultados")
 async def resultados(ctx):
-    fixtures = await fetch_finished()
-    if not fixtures:
+    matches = await fetch_finished()
+    if not matches:
         await ctx.send("No hay resultados disponibles todavía.")
         return
-    for f in fixtures[-5:]:
-        await ctx.send(embed=build_result_embed(f))
+    for m in matches[-5:]:
+        await ctx.send(embed=build_result_embed(m))
         await asyncio.sleep(0.5)
 
 @bot.command(name="votar")
@@ -424,17 +342,14 @@ async def votar(ctx, *, partido: str):
         await ctx.send("Formato: `!votar Equipo1 vs Equipo2`")
         return
     home, away = partes[0].strip(), partes[1].strip()
-    mock = {
-        "teams": {"home": {"name": home}, "away": {"name": away}},
-        "fixture": {"timestamp": datetime.now(timezone.utc).timestamp()},
-        "league": {"round": "Group Stage"}
-    }
-    home_flag = get_flag(home)
-    away_flag = get_flag(away)
+    mock = {"homeTeam": {"name": home}, "awayTeam": {"name": away},
+            "utcDate": datetime.now(timezone.utc).isoformat(),
+            "stage": "GROUP_STAGE", "group": ""}
+    hf, af = get_flag(home), get_flag(away)
     msg = await ctx.send(embed=build_poll_embed(mock))
-    await msg.add_reaction(home_flag)
+    await msg.add_reaction(hf)
     await msg.add_reaction("🤝")
-    await msg.add_reaction(away_flag)
+    await msg.add_reaction(af)
 
 @bot.event
 async def on_ready():
