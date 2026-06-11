@@ -296,7 +296,7 @@ async def check_kickoffs():
     channel = bot.get_channel(CHANNEL_ID)
     if not channel:
         return
-    live = await fd_request({"status": "IN_PLAY,PAUSED,HALFTIME"})
+    live = await fd_request({"status": "IN_PLAY"})
     for m in live:
         mid = m["id"]
         if mid in announced_kickoffs:
