@@ -126,13 +126,23 @@ async def fd_request(params):
             return data.get("matches", [])
 
 async def fetch_today_matches():
-    """Dos llamadas separadas para SCHEDULED y TIMED, luego filtra por fecha."""
+    """Trae partidos de hoy y del día siguiente hasta las 06:00 UTC (cubre partidos nocturnos LATAM)."""
     scheduled = await fd_request({"status": "SCHEDULED"})
-    await asyncio.sleep(1)  # evitar rate limit
+    await asyncio.sleep(1)
     timed = await fd_request({"status": "TIMED"})
 
     all_matches = {m["id"]: m for m in scheduled + timed}
-    today = [m for m in all_matches.values() if is_today(m)]
+
+    now = datetime.now(timezone.utc)
+    # Ventana: desde las 00:00 UTC de hoy hasta las 06:00 UTC de mañana
+    window_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    window_end = window_start + timedelta(hours=30)  # 30hs cubre toda la noche LATAM
+
+    def in_window(m):
+        dt = get_utc_dt(m)
+        return dt and window_start <= dt <= window_end
+
+    today = [m for m in all_matches.values() if in_window(m)]
     today.sort(key=lambda m: m.get("utcDate", ""))
 
     print(f"[BOT] Hoy: {len(today)} partidos → {[m['homeTeam']['name']+' vs '+m['awayTeam']['name'] for m in today]}")
