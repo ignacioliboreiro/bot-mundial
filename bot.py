@@ -314,22 +314,17 @@ async def daily_schedule_sender():
         if channel:
             await send_daily_matches(channel)
 
-@tasks.loop(minutes=2)
+@tasks.loop(minutes=3)
 async def check_kickoffs():
     channel = bot.get_channel(CHANNEL_ID)
     if not channel:
         return
 
     now = datetime.now(timezone.utc)
+    # Reutiliza fetch_upcoming que ya tiene SCHEDULED y TIMED
+    matches = await fetch_upcoming()
 
-    # Busca partidos que deberían estar en curso por horario (arrancaron hace 0-10 min)
-    scheduled = await fd_request({"status": "SCHEDULED"})
-    timed = await fd_request({"status": "TIMED"})
-    live = await fd_request({"status": "IN_PLAY"})
-
-    all_matches = {m["id"]: m for m in scheduled + timed + live}
-
-    for m in all_matches.values():
+    for m in matches:
         mid = m["id"]
         if mid in announced_kickoffs:
             continue
@@ -337,7 +332,6 @@ async def check_kickoffs():
         if not dt:
             continue
         minutes_since_start = (now - dt).total_seconds() / 60
-        # Anunciar si arrancó hace entre 0 y 10 minutos
         if 0 <= minutes_since_start <= 30:
             announced_kickoffs.add(mid)
             save_state()
