@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands, tasks
 import aiohttp
 import asyncio
+import json
 import os
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
@@ -18,10 +19,33 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-announced_matches = set()
+STATE_FILE = "/tmp/bot_state.json"
+
+def load_state():
+    try:
+        with open(STATE_FILE, "r") as f:
+            data = json.load(f)
+            return (
+                set(data.get("announced_matches", [])),
+                set(data.get("announced_kickoffs", [])),
+                set(data.get("daily_announced_dates", []))
+            )
+    except Exception:
+        return set(), set(), set()
+
+def save_state():
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump({
+                "announced_matches": list(announced_matches),
+                "announced_kickoffs": list(announced_kickoffs),
+                "daily_announced_dates": list(daily_announced_dates)
+            }, f)
+    except Exception:
+        pass
+
+announced_matches, announced_kickoffs, daily_announced_dates = load_state()
 active_polls = {}
-daily_announced_dates = set()
-announced_kickoffs = set()
 
 TIMEZONES = [
     ("🇦🇷", "ARG", -3),
@@ -314,8 +338,9 @@ async def check_kickoffs():
             continue
         minutes_since_start = (now - dt).total_seconds() / 60
         # Anunciar si arrancó hace entre 0 y 10 minutos
-        if 0 <= minutes_since_start <= 10:
+        if 0 <= minutes_since_start <= 30:
             announced_kickoffs.add(mid)
+            save_state()
             home, away = m["homeTeam"]["name"], m["awayTeam"]["name"]
             hf, af = get_flag(home), get_flag(away)
             embed = discord.Embed(color=get_color(m))
@@ -346,6 +371,7 @@ async def check_results():
         mid = m["id"]
         if mid not in announced_matches:
             announced_matches.add(mid)
+            save_state()
             await channel.send(embed=build_result_embed(m))
             print(f"[BOT] Resultado (API): {m['homeTeam']['name']} vs {m['awayTeam']['name']}")
 
