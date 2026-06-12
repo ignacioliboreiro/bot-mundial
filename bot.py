@@ -172,7 +172,7 @@ def build_today_header(matches, today_dt):
     embed.title = f"📅  {format_date_es(today_dt)}"
     embed.description = (
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"**{len(matches)}** partido{'s' if len(matches) != 1 else ''} programado{'s' if len(matches) != 1 else ''} para hoy\n"
+        f"**{len(matches)}** partido{'s' if len(matches) != 1 else ''} para hoy\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━"
     )
     embed.set_footer(text="Horarios en tiempo local de cada país")
@@ -185,11 +185,10 @@ def build_match_embed(m, index=None, total=None):
     col1, col2 = format_times(utc)
     dt = get_utc_dt(m)
     utc_time = dt.strftime("%H:%M UTC") if dt else "?"
-    fecha = format_date_es(dt) if dt else ""
     counter = f"Partido {index}/{total}  •  " if index and total else ""
 
     embed = discord.Embed(color=get_color(m))
-    embed.set_author(name=f"{counter}{get_emoji(m)}  {get_stage_name(m)}  •  {fecha}", icon_url=MUNDIAL_BANNER)
+    embed.set_author(name=f"{counter}{get_emoji(m)}  {get_stage_name(m)}", icon_url=MUNDIAL_BANNER)
     embed.title = f"{hf} {home}  🆚  {away} {af}"
     embed.add_field(name="🕐  Horario central", value=f"**`{utc_time}`**", inline=False)
     embed.add_field(name="🌎  Latinoamérica", value=col1, inline=True)
@@ -296,42 +295,81 @@ async def check_kickoffs():
     channel = bot.get_channel(CHANNEL_ID)
     if not channel:
         return
+
+    now = datetime.now(timezone.utc)
+
+    # Busca partidos que deberían estar en curso por horario (arrancaron hace 0-10 min)
+    scheduled = await fd_request({"status": "SCHEDULED"})
+    timed = await fd_request({"status": "TIMED"})
     live = await fd_request({"status": "IN_PLAY"})
-    for m in live:
+
+    all_matches = {m["id"]: m for m in scheduled + timed + live}
+
+    for m in all_matches.values():
         mid = m["id"]
         if mid in announced_kickoffs:
             continue
-        announced_kickoffs.add(mid)
-        home, away = m["homeTeam"]["name"], m["awayTeam"]["name"]
-        hf, af = get_flag(home), get_flag(away)
-        color = get_color(m)
-        stage_name = get_stage_name(m)
-        emoji = get_emoji(m)
-
-        embed = discord.Embed(color=color)
-        embed.set_author(name=f"🟢  PARTIDO EN CURSO  •  {emoji} {stage_name}", icon_url=MUNDIAL_BANNER)
-        embed.title = f"{hf} {home}  ⚽  {away} {af}"
-        embed.description = (
-            f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"**¡El partido acaba de comenzar!**\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━"
-        )
-        embed.set_thumbnail(url=MUNDIAL_BANNER)
-        embed.set_footer(text="Mundial 2026  •  En vivo ahora")
-        embed.timestamp = datetime.now(timezone.utc)
-        await channel.send(embed=embed)
-        print(f"[BOT] Kickoff: {home} vs {away}")
+        dt = get_utc_dt(m)
+        if not dt:
+            continue
+        minutes_since_start = (now - dt).total_seconds() / 60
+        # Anunciar si arrancó hace entre 0 y 10 minutos
+        if 0 <= minutes_since_start <= 10:
+            announced_kickoffs.add(mid)
+            home, away = m["homeTeam"]["name"], m["awayTeam"]["name"]
+            hf, af = get_flag(home), get_flag(away)
+            embed = discord.Embed(color=get_color(m))
+            embed.set_author(name=f"🟢  PARTIDO EN CURSO  •  {get_emoji(m)} {get_stage_name(m)}", icon_url=MUNDIAL_BANNER)
+            embed.title = f"{hf} {home}  ⚽  {away} {af}"
+            embed.description = (
+                f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"**¡El partido acaba de comenzar!**\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━"
+            )
+            embed.set_thumbnail(url=MUNDIAL_BANNER)
+            embed.set_footer(text="Mundial 2026  •  En vivo ahora")
+            embed.timestamp = datetime.now(timezone.utc)
+            await channel.send(embed=embed)
+            print(f"[BOT] Kickoff: {home} vs {away}")
 
 @tasks.loop(minutes=3)
 async def check_results():
     channel = bot.get_channel(CHANNEL_ID)
     if not channel:
         return
-    for m in await fetch_finished():
+
+    now = datetime.now(timezone.utc)
+
+    # Primero intenta con la API
+    finished = await fetch_finished()
+    for m in finished:
         mid = m["id"]
         if mid not in announced_matches:
             announced_matches.add(mid)
             await channel.send(embed=build_result_embed(m))
+            print(f"[BOT] Resultado (API): {m['homeTeam']['name']} vs {m['awayTeam']['name']}")
+
+    # También revisa partidos que por horario ya deberían haber terminado (2h15 desde inicio)
+    scheduled = await fd_request({"status": "SCHEDULED"})
+    timed = await fd_request({"status": "TIMED"})
+    in_play = await fd_request({"status": "IN_PLAY"})
+
+    for m in scheduled + timed + in_play:
+        mid = m["id"]
+        if mid in announced_matches:
+            continue
+        dt = get_utc_dt(m)
+        if not dt:
+            continue
+        minutes_since_start = (now - dt).total_seconds() / 60
+        if minutes_since_start >= 135:  # 2h15 = fin del partido + extra time
+            announced_matches.add(mid)
+            # Consultar el resultado real
+            result = await fd_request({"id": mid})
+            if result:
+                await channel.send(embed=build_result_embed(result[0]))
+                print(f"[BOT] Resultado (horario): {m['homeTeam']['name']} vs {m['awayTeam']['name']}")
+
 
 @tasks.loop(minutes=5)
 async def check_upcoming_polls():
@@ -356,9 +394,77 @@ async def check_upcoming_polls():
 #  COMANDOS
 # ─────────────────────────────
 
+async def fetch_standings():
+    url = f"https://api.football-data.org/v4/competitions/{COMPETITION_ID}/standings"
+    headers = {"X-Auth-Token": FOOTBALL_API_KEY}
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, headers=headers) as resp:
+            if resp.status != 200:
+                print(f"[API ERROR] standings: {resp.status}")
+                return []
+            data = await resp.json()
+            return data.get("standings", [])
+
 @bot.command(name="hoy")
 async def hoy(ctx):
     await send_daily_matches(ctx.channel)
+
+@bot.command(name="tabla")
+async def tabla(ctx, grupo: str = None):
+    """Muestra la tabla de posiciones. Uso: !tabla o !tabla A"""
+    standings = await fetch_standings()
+    if not standings:
+        await ctx.send("No hay tabla disponible todavía.")
+        return
+
+    # Filtrar por grupo si se especifica
+    if grupo:
+        standings = [s for s in standings if grupo.upper() in (s.get("group") or "").upper()]
+        if not standings:
+            await ctx.send(f"No encontré el Grupo {grupo.upper()}.")
+            return
+
+    for group_data in standings:
+        group_name = group_data.get("group", "").replace("Group ", "Grupo ")
+        table = group_data.get("table", [])
+        if not table:
+            continue
+
+        lines = []
+        for row in table:
+            pos = row["position"]
+            team = row["team"]["name"]
+            flag = get_flag(team)
+            pj = row["playedGames"]
+            pts = row["points"]
+            gf = row["goalsFor"]
+            gc = row["goalsAgainst"]
+            gd = row["goalDifference"]
+            gd_str = f"+{gd}" if gd > 0 else str(gd)
+
+            # Medalita para los clasificados (top 2)
+            if pos == 1:
+                medal = "🥇"
+            elif pos == 2:
+                medal = "🥈"
+            else:
+                medal = f"`{pos}.`"
+
+            lines.append(
+                f"{medal} {flag} **{team}**\n"
+                f"┗ PJ:`{pj}` PTS:**`{pts}`** GF:`{gf}` GC:`{gc}` DG:`{gd_str}`"
+            )
+
+        embed = discord.Embed(
+            color=0x5865F2,
+            title=f"📊  Tabla — {group_name}",
+            description="\n\n".join(lines)
+        )
+        embed.set_author(name="🌍  MUNDIAL 2026  •  Posiciones", icon_url=MUNDIAL_BANNER)
+        embed.set_thumbnail(url=MUNDIAL_BANNER)
+        embed.set_footer(text="Mundial 2026  •  🥇🥈 clasifican a octavos")
+        await ctx.send(embed=embed)
+        await asyncio.sleep(0.5)
 
 @bot.command(name="proximos")
 async def proximos(ctx):
